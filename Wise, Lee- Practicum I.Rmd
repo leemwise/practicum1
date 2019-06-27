@@ -1,0 +1,1443 @@
+---
+title: "Practicum 1"
+output:
+  html_document:
+    df_print: paged
+---
+
+<h3>Practicum I- Colorado Department of Education School Performance Framework Data Analysis</h3>
+<h3>Wise, Lee</h3>
+May 11, 2019
+
+
+###Clear Data and Load Libraries
+```{r}
+rm(list = ls())
+library(ggplot2) #For graphical analysis
+library(hexbin) #For hexagonal density plots
+#install.packages('randomForest')
+library(randomForest) #For RF machine learning
+library(tidyverse)
+library(visdat) #For cisualizing missing data
+library(naniar) #For cisualizing missing data
+library(corrplot)
+#install.packages('ggmap')
+#install.packages('maps')
+library(ggmap) #Can be used to graph on a map with ggplot
+library(maps) #Can be used to graph on a map with ggplot
+#install.packages('car')
+library(car) #Used for statistical testing
+library(caret)#For machine learning model evaluation
+library(cluster) #For Clustering
+library(factoextra) #For Cluster Visualizations
+library(plyr)
+library(dplyr) #For filtering, sorting, selecting, and manipulating data
+```
+
+###Read DF
+```{r}
+df18 <- read.csv('CDE_DATA18.csv', header = TRUE, stringsAsFactors = TRUE)
+df17 <- read.csv('CDE_DATA17.csv', header = TRUE, stringsAsFactors = TRUE)
+df16 <- read.csv('CDE_DATA16.csv', header = TRUE, stringsAsFactors = TRUE)
+tax <- read.csv('zip_income2.csv', header = TRUE, stringsAsFactors = FALSE)
+address <- read.csv('district_info.csv', header = TRUE, stringsAsFactors = TRUE)
+```
+
+###View structure of the data
+```{r}
+str(df18)
+```
+
+###View a summary of the data
+```{r}
+summary(df18)
+```
+
+###Create a shortened dataset for quick viewing and manipulation
+```{r}
+df_short <- df18[1:500,]
+```
+
+###Combines all three years together into one dataset
+```{r}
+df <- rbind(df18, df17, df16)
+```
+
+###There are 187 unique districts in the dataset and 1850 individual schools.
+```{r}
+length((unique(df$DIST_NUMBER)))
+length((unique(df$DIST_NAME)))
+length((unique(df$SCH_NAME)))
+```
+
+###Identify the columns in the dataset
+```{r}
+cols <- names(df)
+cols
+```
+
+###See the distribution of the types of schools
+```{r}
+table(df$EMH_TYPE)
+```
+
+###There are some NA's in the ACH_MEAN_SS column because if there were less than 16 students in a specific category they did not include their data in the report due to privacy concerns.
+```{r}
+summary(df)
+```
+
+###Columns starting with PART are giving the numbers used to calculate the participation rate, and will be dropped from the analysis.  The raw participation percentage will be used (ACH_PART_RATE).  Columns starting with PWR are a calculation of Postsecondary Workforce Readiness calculated by the district based on the scores.  Because these are likely to have a strong calculation with the other variables, because they are BASED on those variables, they will be dropped.
+
+```{r}
+data <- df[1:37]
+###Drop the weighted points columns
+data <- subset(data, select = -c(REPORT,REPORT_LEVEL, PTS_ELIG_WEIGHTED, PTS_EARN_WEIGHTED, PCT_PTS_EARN_WEIGHTED))
+```
+
+
+
+
+###The tax data needs to be reformatted because it is broken down by bracket. I will use just the total income for the zip code
+```{r}
+head(tax, 10)
+#Remove commas from numbers and make numeric
+tax$total_zip_income <- as.numeric(gsub(",", "", tax$total))
+tax$num_returns <- as.numeric(gsub(",", "", tax$num_returns))
+#Drop empty rows
+tax2 <- drop_na(tax)
+tax2$num_returns <- as.numeric(tax2$num_returns)
+#The 'total' per zip code always has an empty bracket slot, so I filter by that
+tax2 <- tax2 %>% filter(salary_bracket == '')
+#Now the bracket column is empty, so it is removed
+tax2 <- subset(tax2, select = -c(salary_bracket))
+###The IRS data said these values were in thousands.
+tax2$total_zip_income <- tax2$total_zip_income*1000
+###Calculate average return value (average income)
+tax2$avg_income <- tax2$total_zip_income/tax2$num_returns
+```
+
+###Make the zipcode a numeric variable
+```{r}
+tax2$zipcode <- as.numeric(as.character(tax2$zipcode))
+str(tax2)
+str(address)
+```
+
+###Subset district data to include county, district name, city, and zipcode
+```{r}
+district_zip <- subset(address, select = c(County, Organization.Name, Mailing.City, Mailing.Zipcode))
+```
+
+###Merge district data with school data
+```{r}
+data <- left_join(data, district_zip, by = c('DIST_NAME'='Organization.Name'))
+data <- left_join(data, tax2, by = c('Mailing.Zipcode'='zipcode'))
+```
+
+###Explore what the report-type variable contains
+```{r}
+table(data$REPORT_TYPE)
+```
+
+###Change variables to the desired type (character or numeric)
+```{r}
+data$ACH_MEAN_SS <- as.numeric(as.character(data$ACH_MEAN_SS))
+data$PCT_PTS_EARN <- as.numeric(as.character(data$PCT_PTS_EARN))
+data$DIST_NAME <- as.factor(data$DIST_NAME)
+data$REPORT_YEAR <- as.factor(data$REPORT_YEAR)
+data$Mailing.Zipcode <- as.factor(data$Mailing.Zipcode)
+data$DIST_NUMBER <- as.factor(data$DIST_NUMBER)
+
+```
+
+###View data structure
+```{r}
+str(data)
+```
+
+
+###Using only the data pertaining to the achievement scores (test scores) not postsecondary workforce readiness (PWR) or growth (GRO).
+```{r}
+data_ach <- filter(data, INDICATOR =='ACH')
+```
+
+###Summary of achievement data
+```{r}
+summary(data_ach)
+```
+
+
+###Visualize Missing Data
+https://cran.r-project.org/web/packages/naniar/vignettes/getting-started-w-naniar.html
+```{r}
+#vis_miss(data_ach, warn_large_data = FALSE)
+```
+
+###Visualise the missing data
+```{r}
+gg_miss_var(data_ach)
+```
+
+###Drop the columns using points because they are assigned based on the scores
+```{r}
+data_ach <- subset(data_ach, select = -c(PCT_PTS_EARN, PTS_ELIG, PTS_EARN))
+```
+
+
+###To see which fields are empty
+```{r}
+which(is.na(data_ach$avg_income))
+```
+
+###Look at those rows to see if there is any pattern.
+```{r}
+data_ach[461:480,]
+```
+
+###Some zip codes did not appear in the IRS dataset for some reason, so the income was not properly input.  They will have their income filled with the average for the state.
+```{r}
+avg_income <- mean(data_ach$avg_income, na.rm = TRUE)
+avg_income
+data_ach$avg_income[is.na(data_ach$avg_income)] <- avg_income
+```
+
+###Some schools did not report a percentage for K12 ELL students.  These will be filled with the state average.
+```{r}
+summary(data_ach$K12_PCT_ENGLISH_LEARNERS)
+avg_ell <- mean(data_ach$K12_PCT_ENGLISH_LEARNERS, na.rm = TRUE)
+avg_ell
+data_ach$K12_PCT_ENGLISH_LEARNERS[is.na(data_ach$K12_PCT_ENGLISH_LEARNERS)] <- avg_ell
+summary(data_ach$K12_PCT_ENGLISH_LEARNERS)
+```
+
+###The remaining values will be dropped, removing 6085 rows, which is less than 5% of the total dataset and should not impact the analysis greatly.
+```{r}
+final_data_ach <- drop_na(data_ach)
+```
+
+###Some categories contain so few students, they are not included in the analysis to prevent them from being specifically identified.  These rows are marked by saying the number of participants in ACH_N_VALID is n<16.  These rows are removed because their scores are not valid.
+```{r}
+final_data_ach[197,]
+```
+
+###Get rid of rows that contain 'n<' because this means there were too few observations to include them
+```{r}
+final_data_ach <- filter(final_data_ach, !grepl("n <",ACH_N_VALID))
+```
+
+###Change the variable type to the correct format
+```{r}
+final_data_ach$ACH_N_VALID <- as.numeric(final_data_ach$ACH_N_VALID)
+final_data_ach$ACH_PERCENTILE <- as.numeric(final_data_ach$ACH_PERCENTILE)
+final_data_ach$ACH_PART_RATE <- as.numeric(gsub("%", "", final_data_ach$ACH_PART_RATE))
+```
+
+###See if there are remaining missing values in the participation rate category
+```{r}
+which_na(final_data_ach$ACH_PART_RATE)
+```
+
+
+###Pull out only the numeric columns for analysis
+```{r}
+nums <- unlist(lapply(final_data_ach, is.numeric))
+final_data_numeric <- final_data_ach[ , nums]
+```
+
+###When examining the test data, we are actually looking at TWO different tests, the CMAS and PSAT.  PSAT was not given in 2016, so looking at year to year data where it is included in 2017 and 2018, but not in 2016, does not make sense.  For the purposes of this investigation I will remove PSAT results and only look at CMAS.
+
+https://stackoverflow.com/questions/22850026/filtering-row-which-contains-a-certain-string-using-dplyr
+
+
+###Filter out dataset to include only results with the indicator "ACH".  "ACH" means this is the achievement indicator, which contains student test scores under the ACH_MEAN_SS column.
+```{r}
+final_data_CMAS <- filter(final_data_ach, !grepl("PSAT",SUBINDICATOR))
+final_data_CMAS$SUBINDICATOR <- gsub("CMAS - ", "", final_data_CMAS$SUBINDICATOR)
+data_dist <- filter(final_data_CMAS, DATA_SET == 'DIST')
+data_sch <- filter(final_data_CMAS, DATA_SET == 'SCH')
+
+nums <- unlist(lapply(data_dist, is.numeric))
+data_dist_numeric <- data_dist[ , nums]
+
+nums <- unlist(lapply(data_sch, is.numeric))
+data_sch_numeric <- data_sch[ , nums]
+
+```
+
+###Look at the top results
+```{r}
+head(data_sch)
+```
+
+###Create a correlation plot for the numeric variables by district
+```{r}
+correlations <- cor(data_dist_numeric)
+corrplot(correlations)
+```
+
+###Create a correlation plot for the numeric variables by school
+```{r}
+correlations <- cor(data_sch_numeric)
+corrplot(correlations)
+```
+
+
+###Subset and rank the variables that are correlated with ACH_MEAN_SS, the student test scores.
+```{r}
+corr_df <- as.data.frame(correlations)
+corr_df
+corr_df_mean <- corr_df[8]
+corr_df_mean
+arrange(corr_df_mean, desc(ACH_MEAN_SS))
+```
+
+###Special pairs plots.  Code used is from the R documentation inside ?pairs. Not used in analysis but saved for later.
+```{r}
+### USE COMMAND + SHIFT + C TO BULK UNCOMMENT
+
+# ## put histograms on the diagonal
+# panel.hist <- function(x, ...)
+# {
+#     usr <- par("usr"); on.exit(par(usr))
+#     par(usr = c(usr[1:2], 0, 1.5) )
+#     h <- hist(x, plot = FALSE)
+#     breaks <- h$breaks; nB <- length(breaks)
+#     y <- h$counts; y <- y/max(y)
+#     rect(breaks[-nB], 0, breaks[-1], y, col = "cyan", ...)
+# }
+# ## put (absolute) correlations on the upper panels,
+# ## with size proportional to the correlations.
+# panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+# {
+#     usr <- par("usr"); on.exit(par(usr))
+#     par(usr = c(0, 1, 0, 1))
+#     r <- abs(cor(x, y, use = "complete.obs"))
+#     txt <- format(c(r, 0.123456789), digits = digits)[1]
+#     txt <- paste0(prefix, txt)
+#     if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+#     # text(0.5, 0.5, txt, cex = cex.cor * r) # This is the original from ?pairs()
+#     text(0.5, 0.5, txt, cex = cex.cor * (1 + r) / 2) # This is modified to soften font size changes
+# }
+# pairs(data_sch_numeric, upper.panel = panel.cor,
+#                             diag.panel = panel.hist,
+#                             lower.panel = panel.smooth)
+```
+
+###Finding the most correlated variables
+https://stackoverflow.com/questions/46308308/find-the-pair-of-most-correlated-variables
+```{r}
+cor(data_sch_numeric) %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  gather(var2, value, -var1) %>%
+  arrange(desc(value)) %>%
+  group_by(value) %>%
+  filter(row_number()==1)
+```
+
+
+###Visualize school score distribution for each subject
+```{r}
+
+ggplot(data = data_sch)+
+geom_histogram(aes(x = ACH_MEAN_SS), binwidth = 10)
+
+
+ggplot(data = data_sch)+
+geom_histogram(aes(x = ACH_MEAN_SS), binwidth = 10) + 
+  facet_grid(vars(SUBINDICATOR))
+
+```
+
+###Plot pairs of variables that may have correlation to see trends
+```{r}
+ggplot(data_sch_numeric, aes(x = K12_PCT_FRL, y = K12_PCT_ENGLISH_LEARNERS))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch_numeric, aes(x = K12_PCT_FRL, y = K12_PCT_MINORITY))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch_numeric, aes(x = K12_PCT_MINORITY, y = K12_PCT_ENGLISH_LEARNERS))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_dist_numeric, aes(x = K12_PCT_FRL, y = ACH_PART_RATE))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_dist_numeric, aes(x = avg_income, y = K12_PCT_FRL))+
+  geom_point() +
+  geom_smooth()
+```
+
+###Elbow plot to determine optimal number of clusters. 2 or 3 Clusters look optimal.
+https://www.r-bloggers.com/finding-optimal-number-of-clusters/
+```{r}
+#Elbow Method for finding the optimal number of clusters
+set.seed(123)
+# Compute and plot wss for k = 2 to k = 15.
+k.max <- 15
+data <- data_dist_numeric
+wss <- sapply(1:k.max, 
+              function(k){kmeans(data, k, nstart=50,iter.max = 15 )$tot.withinss})
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+```
+
+###Kmeans CLustering using 3 clusters as indicated from the elbow plot
+```{r}
+set.seed(10)
+clust <- kmeans(data_sch_numeric, centers = 3)
+clust
+plot(data_sch_numeric$K12_PCT_FRL, data_sch_numeric$ACH_MEAN_SS, col = clust$cluster, main = '3 Cluster Mean Scores vs. %FRL', xlab = '%FRL', ylab = 'Scores')
+
+set.seed(10)
+dat <- data_sch_numeric[c('ACH_MEAN_SS', 'K12_PCT_FRL')]
+clust2 <- kmeans(dat, centers = 3)
+clust2
+plot(dat$K12_PCT_FRL, dat$ACH_MEAN_SS, col = clust2$cluster, main = '3 Cluster Mean Scores vs. %FRL', xlab = '%FRL', ylab = 'Scores')
+```
+
+###Table of clusters showing how many in each category
+```{r}
+table(clust$cluster)
+clustered <- data_sch
+clustered_nums <- data_sch_numeric
+clustered$cluster <- clust$cluster
+clustered_nums$cluster <- clust$cluster
+```
+
+###Summarize averages of each cluster column
+```{r}
+clustered_nums %>% group_by(cluster) %>% dplyr::summarise_all(funs(mean))
+```
+
+###See how many values and how many unique zip codes are in each cluster.
+```{r}
+library(plyr)
+clustered %>% group_by(cluster) %>% dplyr::summarise(count = n(),unique_zips = length(unique(Mailing.Zipcode)))
+```
+
+###Subset clusters
+```{r}
+cluster1 <- clustered %>% filter(cluster == 1)
+cluster2 <- clustered %>% filter(cluster == 2)
+cluster3 <- clustered %>% filter(cluster == 3)
+```
+
+###Plot the Clusters based on the most important components (KMEANS)
+https://rstudio-pubs-static.s3.amazonaws.com/33876_1d7794d9a86647ca90c4f182df93f0e8.html
+```{r}
+library(cluster)
+clusplot(data_sch_numeric, clust$cluster, main='2D representation of the Cluster solution',
+         color=TRUE, shade=TRUE,
+         labels=4, lines=0, col.p = (clust$cluster))
+```
+
+###View cluster
+```{r}
+clust
+```
+
+###Scale Data
+```{r}
+scaled_DSN <- as.data.frame(scale(data_sch_numeric))
+```
+
+###Create New Kmeans Clusters
+```{r}
+clust_scaled <-  kmeans(scaled_DSN, centers = 3)
+clust_scaled
+```
+
+###Plot 2D Clusters
+```{r}
+clusplot(scaled_DSN, clust_scaled$cluster, main='2D representation of the Cluster solution',
+         color=TRUE, shade=TRUE,
+         labels=4, lines=0, col.p = (clust_scaled$cluster))
+```
+
+
+###Heirarchical Clustering attempt using a dendrogram
+```{r}
+d<- 'red'
+set.seed(100)
+sample_DSN <- sample_frac(scaled_DSN, 0.1)
+d <- dist(sample_DSN, method = "euclidean")
+H.fit <- hclust(d, method="ward.D")
+plot(H.fit) # display dendogram
+groups <- cutree(H.fit, k=3) # cut tree into 3 clusters
+# draw dendogram with red borders around the 3 clusters
+rect.hclust(H.fit, k=3, border="red") 
+```
+
+
+###What is the difference between kmeans and PAM?
+K-means attempts to minimize the total squared error, while k-medoids minimizes the sum of dissimilarities between points labeled to be in a cluster and a point designated as the center of that cluster. In contrast to the k-means algorithm, k-medoids chooses datapoints as centers.
+http://www.math.le.ac.uk/people/ag153/homepage/KmeansKmedoids/Kmeans_Kmedoids.html
+
+
+###PAM Clustering: Partitioning Around Medoids
+```{r}
+set.seed(100)
+sample_DSN <- sample_frac(scaled_DSN, 0.1)
+pam.res <- pam(sample_DSN, 3)
+
+# Visualize
+fviz_cluster(pam.res)
+```
+
+###Create Kmeans for the same sampled data
+```{r}
+kmeans_sample <-  kmeans(sample_DSN, centers = 3)
+```
+
+###Plot the kmeans scaled cluster sample
+```{r}
+clusplot(sample_DSN, kmeans_sample$cluster, main='2D representation of the Cluster solution',
+         color=TRUE, shade=TRUE,
+         labels=4, lines=0, col.p = (kmeans_sample$cluster))
+```
+
+
+###Confusion matrix comparing the two methods (PAM vs. Kmeans)
+```{r}
+confusionMatrix(as.factor(kmeans_sample$cluster),as.factor(pam.res$clustering))
+```
+
+###When looking at the clustering, the reason that the confusion matrix does not line up is that for the same data on PAM which is labeled a 2 is called cluster 1 for the kmeans, and vice versa.  This can be confirmed in the cluster visualizations by looking at the colors and what they are labeled as.
+
+```{r}
+head(sample_DSN)
+kmeans_clusters <- as.factor(kmeans_sample$cluster)
+PAM_clusters <- as.factor(pam.res$clustering)
+
+kmeans_clusters <- mapvalues(kmeans_clusters, from = c("1", "2"), to = c("2", "1"))
+```
+
+###Now we can see that the two methods are 92% in agreement with the dataset.
+```{r}
+confusionMatrix(kmeans_clusters,PAM_clusters)
+```
+
+
+###Convert REPORT_YEAR to Numeric
+```{r}
+data_sch$REPORT_YEAR <- as.numeric(as.character(data_sch$REPORT_YEAR))
+```
+
+###Plots showing different subgroupings of the data
+```{r}
+ggplot(data_sch, aes(x = K12_PCT_MINORITY, y = ACH_MEAN_SS))+
+  facet_grid(cols = vars(REPORT_YEAR))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch, aes(x = K12_PCT_MINORITY, y = ACH_MEAN_SS, col = RATING_FINAL))+
+  facet_grid(cols = vars(REPORT_YEAR))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch, aes(x = K12_PCT_MINORITY, y = ACH_MEAN_SS, col = SUBCATEGORY))+
+  facet_grid(cols = vars(SUBCATEGORY))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch, aes(x = K12_PCT_MINORITY, y = ACH_MEAN_SS, col = SUBINDICATOR))+
+  facet_grid(cols = vars(REPORT_YEAR))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch, aes(x = avg_income, y = ACH_MEAN_SS, col = SUBINDICATOR))+
+  facet_grid(cols = vars(REPORT_YEAR))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch, aes(x = K12_PCT_MINORITY, y = ACH_MEAN_SS, col = SUBINDICATOR))+
+  facet_grid(cols = vars(SUBINDICATOR))+
+  geom_point() +
+  geom_smooth()
+
+```
+
+###Create a comparison of the scores above 600 vs below 450 to see if there is a major difference in demographics for high scorers compared to low.
+https://stackoverflow.com/questions/27659831/dplyr-apply-function-table-to-each-column-of-a-data-frame
+
+
+```{r}
+data_sch %>% 
+  filter(ACH_MEAN_SS > 600) %>%
+  filter(SUBINDICATOR == 'SCIENCE')%>%
+   lapply(table) %>% 
+   lapply(as.data.frame) %>% 
+   Map(cbind,var = names(data_sch),.) %>% 
+   rbind_all() %>% 
+   group_by(var) %>% 
+   mutate(pct = round(Freq / sum(Freq) * 100,2)) %>%
+  filter(pct>10)
+
+data_sch %>% 
+  filter(ACH_MEAN_SS < 450) %>%
+  filter(SUBINDICATOR == 'SCIENCE')%>%
+   lapply(table) %>% 
+   lapply(as.data.frame) %>% 
+   Map(cbind,var = names(data_sch),.) %>% 
+   rbind_all() %>% 
+   group_by(var) %>% 
+   mutate(pct = round(Freq / sum(Freq) * 100,2)) %>%
+  filter(pct>10)
+```
+
+
+
+
+###See how scores fluctuate across all schools. Year vs. Subject, Year vs. Subcategory, Year vs. Charter Status.
+```{r}
+ggplot(data_sch %>% filter(SUBCATEGORY == 'All Students') %>% group_by(REPORT_YEAR,SUBINDICATOR) %>% dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = SUBINDICATOR))+
+  geom_point() +
+  geom_line()
+
+ggplot(data_sch %>% group_by(REPORT_YEAR,SUBCATEGORY) %>% dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = SUBCATEGORY))+
+  geom_point() +
+  geom_line()
+
+ggplot(data_sch %>% group_by(REPORT_YEAR,SUBCATEGORY) %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS') %>%dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = SUBCATEGORY))+
+  geom_point() +
+  geom_line()
+
+ggplot(data_sch %>% group_by(REPORT_YEAR,CHARTER_YN) %>% dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = CHARTER_YN))+
+  geom_point() +
+  geom_line()
+
+ggplot(data_sch %>% group_by(REPORT_YEAR,ONLINE_YN) %>% dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = ONLINE_YN))+
+  geom_point() +
+  geom_line()
+
+ggplot(data_sch %>% group_by(REPORT_YEAR,ALTERNATIVE_ED_CAMPUS_YN) %>% dplyr::summarise(mean_score = mean(ACH_MEAN_SS)), aes(x = REPORT_YEAR, y = mean_score, col = ALTERNATIVE_ED_CAMPUS_YN))+
+  geom_point() +
+  geom_line()
+```
+
+
+###Average score by district and year.
+```{r}
+data_sch %>%
+filter(SUBCATEGORY == 'All Students') %>%
+group_by(DIST_NAME, REPORT_YEAR) %>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+```
+
+###Average score by district and year broken by subcategory.
+```{r}
+data_sch %>%
+filter(SUBCATEGORY == 'All Students') %>%
+group_by(DIST_NAME, REPORT_YEAR, SUBINDICATOR) %>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+```
+
+###A comparison of different groupings and their mean test score (ACH_MEAN_SS).
+```{r}
+data_sch %>%
+group_by(SUBCATEGORY)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(CHARTER_YN)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(ONLINE_YN)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(ALTERNATIVE_ED_CAMPUS_YN)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(NEW_SCHOOL_YN)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(CLOSED_SCHOOL_YN)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+
+data_sch %>%
+group_by(County)%>%
+dplyr::summarise(mean_mino = mean(K12_PCT_MINORITY))
+```
+
+###Average test scores by test and subindicator
+```{r}
+data_sch %>%
+group_by(SUBCATEGORY, SUBINDICATOR)%>%
+dplyr::summarise(mean_score = mean(ACH_MEAN_SS))
+```
+
+###To use in Tableau 
+```{r}
+data_tableau <- data_sch
+data_tableau$cluster <- clust$cluster
+write_csv(data_tableau, 'data_tableau.csv')
+```
+
+###See percentage of ELL students by zipcode (for comparison to Tableau calculations)
+```{r}
+data_sch %>%
+group_by(Mailing.Zipcode)%>%
+dplyr::summarise(mean_score = mean(K12_PCT_ENGLISH_LEARNERS))%>%
+arrange(desc(mean_score))
+```
+
+###Statistical testing to show if there are differences in each group: All Students, English Learners, Free/Reduced-Price Lunch Eligible, Minority Students, Previously Identified for READ Plan, Students with Disabilities
+
+###Subset the data by subcategory for SCIENCE test.  Check for normality using QQ plot.  If the data is normally distributed, the points will fall roughly on the line.  Histograms are also made for comparison. 
+```{r}
+all_students <- data_sch %>% filter(SUBCATEGORY == 'All Students') %>% filter(SUBINDICATOR == 'SCIENCE')
+qqnorm(all_students$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(all_students$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(all_students$ACH_MEAN_SS)
+
+ELL <- data_sch %>% filter(SUBCATEGORY == 'English Learners') %>% filter(SUBINDICATOR == 'SCIENCE')
+qqnorm(ELL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(ELL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(ELL$ACH_MEAN_SS)
+
+FRL <- data_sch %>% filter(SUBCATEGORY == 'Free/Reduced-Price Lunch Eligible')%>% filter(SUBINDICATOR == 'SCIENCE')
+qqnorm(FRL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(FRL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(FRL$ACH_MEAN_SS)
+
+MIN <- data_sch %>% filter(SUBCATEGORY == 'Minority Students')%>% filter(SUBINDICATOR == 'SCIENCE')
+qqnorm(MIN$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(MIN$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(MIN$ACH_MEAN_SS)
+
+DIS <- data_sch %>% filter(SUBCATEGORY == 'Students with Disabilities')%>% filter(SUBINDICATOR == 'SCIENCE')
+qqnorm(DIS$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(DIS$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(DIS$ACH_MEAN_SS)
+
+###READ STUDENTS DID NOT TAKE SCIENCE TEST
+# READ <- data_sch %>% filter(SUBCATEGORY == 'Previously Identified for READ Plan')%>% filter(SUBINDICATOR == 'SCIENCE')
+# qqnorm(READ$ACH_MEAN_SS, pch = 1, frame = FALSE)
+# qqline(READ$ACH_MEAN_SS, col = "red", lwd = 2)
+# hist(READ$ACH_MEAN_SS)
+```
+###T-test not used because assumptions not met
+```{r}
+# t.test(all_students$ACH_MEAN_SS , ELL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , FRL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , MIN$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , DIS$ACH_MEAN_SS, alternative = 'greater')
+# #t.test(all_students$ACH_MEAN_SS , READ$ACH_MEAN_SS, alternative = 'greater')
+```
+
+
+###Repeat for MATH test.
+```{r}
+all_students <- data_sch %>% filter(SUBCATEGORY == 'All Students') %>% filter(SUBINDICATOR == 'MATH')
+qqnorm(all_students$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(all_students$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(all_students$ACH_MEAN_SS)
+
+ELL <- data_sch %>% filter(SUBCATEGORY == 'English Learners') %>% filter(SUBINDICATOR == 'MATH')
+qqnorm(ELL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(ELL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(ELL$ACH_MEAN_SS)
+
+FRL <- data_sch %>% filter(SUBCATEGORY == 'Free/Reduced-Price Lunch Eligible')%>% filter(SUBINDICATOR == 'MATH')
+qqnorm(FRL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(FRL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(FRL$ACH_MEAN_SS)
+
+MIN <- data_sch %>% filter(SUBCATEGORY == 'Minority Students')%>% filter(SUBINDICATOR == 'MATH')
+qqnorm(MIN$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(MIN$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(MIN$ACH_MEAN_SS)
+
+DIS <- data_sch %>% filter(SUBCATEGORY == 'Students with Disabilities')%>% filter(SUBINDICATOR == 'MATH')
+qqnorm(DIS$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(DIS$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(DIS$ACH_MEAN_SS)
+
+###READ STUDENTS DID NOT TAKE MATH TEST
+# READ <- data_sch %>% filter(SUBCATEGORY == 'Previously Identified for READ Plan')%>% filter(SUBINDICATOR == 'MATH')
+# qqnorm(READ$ACH_MEAN_SS, pch = 1, frame = FALSE)
+# qqline(READ$ACH_MEAN_SS, col = "red", lwd = 2)
+# hist(READ$ACH_MEAN_SS)
+```
+
+###T-test not used because assumptions not met
+```{r}
+# t.test(all_students$ACH_MEAN_SS , ELL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , FRL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , MIN$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , DIS$ACH_MEAN_SS, alternative = 'greater')
+# #t.test(all_students$ACH_MEAN_SS , READ$ACH_MEAN_SS, alternative = 'greater')
+```
+
+
+
+###Repeat for ENGLISH LANGUAGE ARTS
+```{r}
+all_students <- data_sch %>% filter(SUBCATEGORY == 'All Students') %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(all_students$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(all_students$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(all_students$ACH_MEAN_SS)
+
+ELL <- data_sch %>% filter(SUBCATEGORY == 'English Learners') %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(ELL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(ELL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(ELL$ACH_MEAN_SS)
+
+FRL <- data_sch %>% filter(SUBCATEGORY == 'Free/Reduced-Price Lunch Eligible')%>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(FRL$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(FRL$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(FRL$ACH_MEAN_SS)
+
+MIN <- data_sch %>% filter(SUBCATEGORY == 'Minority Students')%>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(MIN$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(MIN$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(MIN$ACH_MEAN_SS)
+
+DIS <- data_sch %>% filter(SUBCATEGORY == 'Students with Disabilities')%>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(DIS$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(DIS$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(DIS$ACH_MEAN_SS)
+
+READ <- data_sch %>% filter(SUBCATEGORY == 'Previously Identified for READ Plan')%>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+qqnorm(READ$ACH_MEAN_SS, pch = 1, frame = FALSE)
+qqline(READ$ACH_MEAN_SS, col = "red", lwd = 2)
+hist(READ$ACH_MEAN_SS)
+```
+
+###T-test not used because assumptions not met
+```{r}
+# t.test(all_students$ACH_MEAN_SS , ELL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , FRL$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , MIN$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , READ$ACH_MEAN_SS, alternative = 'greater')
+# t.test(all_students$ACH_MEAN_SS , DIS$ACH_MEAN_SS, alternative = 'greater')
+```
+
+###ANOVA: Analysis of Variance among all groups.
+http://www.sthda.com/english/wiki/one-way-anova-test-in-r
+
+###Subset data for SCIENCE
+```{r}
+anova_data <- data_sch %>% filter(SUBINDICATOR == 'SCIENCE') %>%select(c(SUBCATEGORY, ACH_MEAN_SS))
+```
+
+###Visualize groupings using ggplot and box plots.
+```{r}
+ggplot(anova_data) + 
+  geom_boxplot(aes(x = SUBCATEGORY, y = ACH_MEAN_SS, col = SUBCATEGORY))+
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))+
+  theme(legend.position = "none") +
+  ggtitle('Score Distributions for CSAP Science Exams')
+```
+
+###Initial statistics for Science showing count, mean, and standard deviation of each group
+```{r}
+group_by(anova_data, SUBCATEGORY) %>% dplyr::summarise(count = n(), mean = mean(ACH_MEAN_SS, na.rm = TRUE), std_dev = sd(ACH_MEAN_SS, na.rm = TRUE))
+```
+
+###See if the ANOVA is significant
+```{r}
+aov <- aov(ACH_MEAN_SS~SUBCATEGORY, data = anova_data)
+summary(aov)
+```
+
+###Since the ANOVA was significant, the Tukey Honest Significant Difference (Tukey HSD) test shows each individual pairing.
+```{r}
+TukeyHSD(aov)
+```
+
+
+###One assumption for t-tests and ANOVA is that the variances across the groups is homogenous.  The Levene test helps determine homogeneity of the variances.  The null hypothesis is that there is uniform variance.  If the p-value is significant (less than 0.05), it indicates that there is high variability in the variances, violating one of the assumptions.
+```{r}
+leveneTest(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+###Another assumption is that the samples are normally distributed.  The Shapiro test looks for normality. If the P-value is less than 0.05, we reject the null assumption that the samples are normally distributed and conclude that they are not normally distributed, violating the assumptions.
+```{r}
+# Extract the residuals
+aov_residuals <- residuals(object = aov )
+aov_sample <- sample(aov_residuals, size = 1000, replace = TRUE)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_sample)
+```
+
+###None of these are close enough to a normal distribution to accept the null, meaning they all violate the assumption of normality.
+```{r}
+set.seed(10)
+shapiro.test(x = sample(all_students$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(ELL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(FRL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(MIN$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(DIS$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = READ$ACH_MEAN_SS)
+```
+
+###Kruskal-Wallis rank sum test is a nonparametric test, which can be used when the assumptions needed for ANOVA are broken.
+```{r}
+kruskal.test(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+
+###Subset data for MATH
+```{r}
+anova_data <- data_sch %>% filter(SUBINDICATOR == 'MATH') %>%select(c(SUBCATEGORY, ACH_MEAN_SS))
+```
+
+###Visualize groupings
+```{r}
+ggplot(anova_data) + 
+  geom_boxplot(aes(x = SUBCATEGORY, y = ACH_MEAN_SS, col = SUBCATEGORY))+
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))+
+  theme(legend.position = "none") +
+  ggtitle('Score Distributions for CSAP Math Exams')
+```
+
+###Initial statistics for Math test
+```{r}
+group_by(anova_data, SUBCATEGORY) %>% dplyr::summarise(count = n(), mean = mean(ACH_MEAN_SS, na.rm = TRUE), std_dev = sd(ACH_MEAN_SS, na.rm = TRUE))
+```
+
+###See if the ANOVA is significant
+```{r}
+aov <- aov(ACH_MEAN_SS~SUBCATEGORY, data = anova_data)
+summary(aov)
+```
+
+###Since the ANOVA was significant (p-value less than 0.05), the Tukey Honest Significant Difference (Tukey HSD) test shows each individual pairing.
+```{r}
+TukeyHSD(aov)
+```
+
+
+###One assumption for t-tests and ANOVA is that the variances across the groups is homogenous.  The Levene test helps determine homogeneity of the variances.  The null hypothesis is that there is uniform variance.  If the p-value is significant (less than 0.05), it indicates that there is high variability in the variances, violating one of the assumptions.
+```{r}
+leveneTest(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+###Another assumption is that the samples are normally distributed.  The Shapiro test looks for normality. If the P-value is less than 0.05, we reject the null assumption that the samples are normally distributed and conclude that they are not normally distributed, violating the assumptions.
+```{r}
+# Extract the residuals
+aov_residuals <- residuals(object = aov )
+aov_sample <- sample(aov_residuals, size = 1000, replace = TRUE)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_sample)
+```
+
+###None of these are close enough to a normal distribution to accept the null, meaning they all violate the assumption of normality.
+```{r}
+set.seed(10)
+shapiro.test(x = sample(all_students$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(ELL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(FRL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(MIN$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(DIS$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = READ$ACH_MEAN_SS)
+```
+
+###Kruskal-Wallis rank sum test is a nonparametric test, which can be used when the assumptions needed for ANOVA are broken.
+```{r}
+kruskal.test(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+
+###Subset data for ENGLISH LANGUAGE ARTS
+```{r}
+anova_data <- data_sch %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS') %>%select(c(SUBCATEGORY, ACH_MEAN_SS))
+```
+
+###Visualize groupings
+```{r}
+ggplot(anova_data) + 
+  geom_boxplot(aes(x = SUBCATEGORY, y = ACH_MEAN_SS, col = SUBCATEGORY))+
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))+
+  theme(legend.position = "none") +
+  ggtitle('Score Distributions for CSAP English Language Arts Exams')
+```
+
+###Initial statistics for English Language Arts Test
+```{r}
+group_by(anova_data, SUBCATEGORY) %>% dplyr::summarise(count = n(), mean = mean(ACH_MEAN_SS, na.rm = TRUE), std_dev = sd(ACH_MEAN_SS, na.rm = TRUE))
+```
+
+###See if the ANOVA is significant
+```{r}
+aov <- aov(ACH_MEAN_SS~SUBCATEGORY, data = anova_data)
+summary(aov)
+```
+
+###Since the ANOVA was significant, the Tukey Honest Significant Difference (Tukey HSD) test shows each individual pairing.
+```{r}
+TukeyHSD(aov)
+```
+
+
+###One assumption for t-tests and ANOVA is that the variances across the groups is homogenous.  The Levene test helps determine homogeneity of the variances.  The null hypothesis is that there is uniform variance.  If the p-value is significant (less than 0.05), it indicates that there is high variability in the variances, violating one of the assumptions.
+```{r}
+leveneTest(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+###Another assumption is that the samples are normally distributed.  The Shapiro test looks for normality. If the P-value is less than 0.05, we reject the null assumption that the samples are normally distributed and conclude that they are not normally distributed, violating the assumptions.
+```{r}
+# Extract the residuals
+aov_residuals <- residuals(object = aov )
+aov_sample <- sample(aov_residuals, size = 1000, replace = TRUE)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_sample)
+```
+
+###None of these are close enough to a normal distribution to accept the null, meaning they all violate the assumption of normality.
+```{r}
+set.seed(10)
+shapiro.test(x = sample(all_students$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(ELL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(FRL$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(MIN$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(DIS$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = READ$ACH_MEAN_SS)
+```
+
+###Kruskal-Wallis rank sum test is a nonparametric test, which can be used when the assumptions needed for ANOVA are broken.
+```{r}
+kruskal.test(ACH_MEAN_SS ~ SUBCATEGORY, data = anova_data)
+```
+
+###Group data by subject to see if the scores are significantly different
+```{r}
+anova_data_subject <- data_sch %>% select(c(ACH_MEAN_SS, SUBINDICATOR))
+anova_data_subject$SUBINDICATOR <- as.factor(anova_data_subject$SUBINDICATOR)
+```
+
+###Plot score distributions by subject
+```{r}
+ggplot(anova_data_subject) + 
+  geom_boxplot(aes(x = SUBINDICATOR, y = ACH_MEAN_SS, col = SUBINDICATOR))+
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))+
+  theme(legend.position = "none") +
+  ggtitle('Score Distributions for CSAP by Subject')
+```
+
+###Show the count, average score, and standard deviation for each subject
+```{r}
+group_by(anova_data_subject, SUBINDICATOR) %>%
+  dplyr::summarise(
+    count = n(),
+    mean = mean(ACH_MEAN_SS, na.rm = TRUE),
+    sd = sd(ACH_MEAN_SS, na.rm = TRUE)
+  )
+```
+
+###See if the data is homogeneous
+```{r}
+leveneTest(ACH_MEAN_SS ~ SUBINDICATOR, data = anova_data_subject)
+```
+###The science data IS normally distributed, but the other two are not.
+```{r}
+sci <- anova_data_subject %>% filter(SUBINDICATOR == 'SCIENCE')
+math <- anova_data_subject %>% filter(SUBINDICATOR == 'MATH')
+eng <- anova_data_subject %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+shapiro.test(x = sample(sci$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(math$ACH_MEAN_SS, size = 3000, replace = TRUE))
+shapiro.test(x = sample(eng$ACH_MEAN_SS, size = 3000, replace = TRUE))
+```
+
+
+###Use since data breaks assumptions for ANOVA
+```{r}
+kruskal.test(ACH_MEAN_SS ~ SUBINDICATOR, data = anova_data_subject)
+```
+###Compare AOV to Kruskall Test
+```{r}
+aov <- aov(ACH_MEAN_SS~SUBINDICATOR, data = anova_data_subject)
+summary(aov)
+```
+
+###Look at individual pairings of data
+```{r}
+TukeyHSD(aov)
+```
+
+
+###Subsetting data for each exam type.  Also removing variables with either too many factors (53 is max) or that will not affect the analysis (like the name of the school, or factors with only one level).  The preliminary, final, and percentiles are based on the scores, so they are excluded to prevent circular dependency.
+```{r}
+data_rf <- data_sch
+data_rf$SUBINDICATOR <- as.factor(data_rf$SUBINDICATOR)
+data_rf<- subset(data_rf, select = -c(total, DIST_NUMBER, DIST_NAME, SCH_NUMBER, SCH_NAME, County, Mailing.City,Mailing.Zipcode, RATING_PRELIMINARY, RATING_FINAL, ACH_PERCENTILE, DATA_SET, INDICATOR, total_zip_income))
+#data_rf_sample <- data_rf[sample(nrow(data_rf), 5000, replace = FALSE),]
+data_rf <- filter(data_rf, SUBCATEGORY == 'All Students') #To predict the scores for the school, look at ALL students
+data_rf_sci <- filter(data_rf, SUBINDICATOR == 'SCIENCE')
+data_rf_math <- filter(data_rf, SUBINDICATOR == 'MATH')
+data_rf_eng <- filter(data_rf, SUBINDICATOR == 'ENGLISH LANGUAGE ARTS')
+data_rf_sci_sample <- sample_n(data_rf_sci, 400)
+```
+
+
+
+###Machine Learning to Predict Test Scores
+###Split the data into train and test sets
+```{r}
+?createDataPartition #For science
+indxTrain <- createDataPartition(y = data_rf_sci$ACH_MEAN_SS,p = 0.8, list = TRUE)
+data_rf_sci_train <- data_rf_sci[indxTrain$Resample1,]
+data_rf_sci_test <- data_rf_sci[-indxTrain$Resample1,]
+
+?createDataPartition #for math
+indxTrain <- createDataPartition(y = data_rf_math$ACH_MEAN_SS,p = 0.8, list = TRUE)
+data_rf_math_train <- data_rf_math[indxTrain$Resample1,]
+data_rf_math_test <- data_rf_math[-indxTrain$Resample1,]
+
+?createDataPartition # for english
+indxTrain <- createDataPartition(y = data_rf_eng$ACH_MEAN_SS,p = 0.8, list = TRUE)
+data_rf_eng_train <- data_rf_eng[indxTrain$Resample1,]
+data_rf_eng_test <- data_rf_eng[-indxTrain$Resample1,]
+```
+
+###Using caret package, set up Random Forest and KNN Models once for each subject
+```{r}
+set.seed(100)
+mod_Controls = trainControl(method='cv',number=5)
+rf.sci = train(ACH_MEAN_SS~., data=data_rf_sci_train, method = 'rf', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+
+mod_Controls = trainControl(method='cv',number=5)
+rf.math = train(ACH_MEAN_SS~., data=data_rf_math_train, method = 'rf', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+
+mod_Controls = trainControl(method='cv',number=5)
+rf.eng = train(ACH_MEAN_SS~., data=data_rf_eng_train, method = 'rf', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+
+
+
+mod_Controls = trainControl(method='cv',number=5)
+knn.sci = train(ACH_MEAN_SS~., data=data_rf_sci_train, method = 'knn', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+
+mod_Controls = trainControl(method='cv',number=5)
+knn.math = train(ACH_MEAN_SS~., data=data_rf_math_train, method = 'knn', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+
+mod_Controls = trainControl(method='cv',number=5)
+knn.eng = train(ACH_MEAN_SS~., data=data_rf_eng_train, method = 'knn', metric = 'RMSE',trControl=mod_Controls, importance = TRUE)
+```
+
+###Look at results based on Random Forest Results
+```{r}
+print(rf.sci)
+print(rf.math)
+print(rf.eng)
+
+print(knn.sci)
+print(knn.math)
+print(knn.eng)
+```
+
+###Predict science scores on test data and compare to actual values.
+```{r}
+pred_sci <- as.data.frame(predict(rf.sci, data_rf_sci_test))
+pred_sci$ACTUAL <- data_rf_sci_test$ACH_MEAN_SS
+names(pred_sci) <- c('Predicted','Actual')
+pred_sci$Difference <- round(pred_sci$Predicted - pred_sci$Actual,1)
+pred_sci
+
+
+pred_math <- as.data.frame(predict(rf.math, data_rf_math_test))
+pred_math$ACTUAL <- data_rf_math_test$ACH_MEAN_SS
+names(pred_math) <- c('Predicted','Actual')
+pred_math$Difference <- round(pred_math$Predicted - pred_math$Actual,1)
+pred_math
+
+
+pred_eng <- as.data.frame(predict(rf.eng, data_rf_eng_test))
+pred_eng$ACTUAL <- data_rf_eng_test$ACH_MEAN_SS
+names(pred_eng) <- c('Predicted','Actual')
+pred_eng$Difference <- round(pred_eng$Predicted - pred_eng$Actual,1)
+pred_eng
+
+
+
+knn_pred_sci <- as.data.frame(predict(knn.sci, data_rf_sci_test))
+knn_pred_sci$ACTUAL <- data_rf_sci_test$ACH_MEAN_SS
+names(knn_pred_sci) <- c('Predicted','Actual')
+knn_pred_sci$Difference <- round(knn_pred_sci$Predicted - knn_pred_sci$Actual,1)
+knn_pred_sci
+
+
+knn_pred_math <- as.data.frame(predict(knn.math, data_rf_math_test))
+knn_pred_math$ACTUAL <- data_rf_math_test$ACH_MEAN_SS
+names(knn_pred_math) <- c('Predicted','Actual')
+knn_pred_math$Difference <- round(knn_pred_math$Predicted - knn_pred_math$Actual,1)
+knn_pred_math
+
+
+knn_pred_eng <- as.data.frame(predict(knn.eng, data_rf_eng_test))
+knn_pred_eng$ACTUAL <- data_rf_eng_test$ACH_MEAN_SS
+names(knn_pred_eng) <- c('Predicted','Actual')
+knn_pred_eng$Difference <- round(knn_pred_eng$Predicted - knn_pred_eng$Actual,1)
+knn_pred_eng
+```
+
+###Plotting Predicted Vs. Actual Scores
+```{r}
+ggplot(pred_sci, aes(x = Predicted, y = Actual) ) +
+  geom_point() +
+  geom_abline(intercept = 0, col = 'red', size = 1) +
+  ggtitle('Science Actual vs. Predicted Values')
+
+ggplot(pred_math, aes(x = Predicted, y = Actual) ) +
+  geom_point() +
+  geom_abline(intercept = 0, col = 'green', size = 1) +
+  ggtitle('Math Actual vs. Predicted Values')
+
+ggplot(pred_eng, aes(x = Predicted, y = Actual) ) +
+  geom_point() +
+  geom_abline(intercept = 0, col = 'purple', size = 1) +
+  ggtitle('English Actual vs. Predicted Values')
+```
+
+
+
+###Look at the average difference in prediction vs. actual test score.
+```{r}
+print('RF Sci Difference')
+mean(abs(pred_sci$Difference))
+
+print('RF Math Difference')
+mean(abs(pred_math$Difference))
+
+print('RF English Difference')
+mean(abs(pred_eng$Difference))
+
+print('KNN Sci Difference')
+mean(abs(knn_pred_sci$Difference))
+
+print('KNN Math Difference')
+mean(abs(knn_pred_math$Difference))
+
+print('KNN English Difference')
+mean(abs(knn_pred_eng$Difference))
+```
+
+###See the range of scores
+```{r}
+min(pred_sci$Actual)
+max(pred_sci$Actual)
+
+max(pred_sci$Actual)-min(pred_sci$Actual)
+
+min(pred_math$Actual)
+max(pred_math$Actual)
+
+max(pred_math$Actual)-min(pred_math$Actual)
+
+min(pred_eng$Actual)
+max(pred_eng$Actual)
+
+max(pred_eng$Actual)-min(pred_eng$Actual)
+
+
+
+min(knn_pred_sci$Actual)
+max(knn_pred_sci$Actual)
+
+max(knn_pred_sci$Actual)-min(knn_pred_sci$Actual)
+
+min(knn_pred_math$Actual)
+max(knn_pred_math$Actual)
+
+max(knn_pred_math$Actual)-min(knn_pred_math$Actual)
+
+min(knn_pred_eng$Actual)
+max(knn_pred_eng$Actual)
+
+max(knn_pred_eng$Actual)-min(knn_pred_eng$Actual)
+```
+
+###For science, scores range from a low of 393 to a high of 754, giving a total range of scores of 361 points.  The average error of the prediction is +- 20.3.  I believe that if the scores were divided into a scale going up by 50 (below 500, 550, 600, 650, above 700), the algorithm could correctly predict a high percentage of the scores.
+```{r}
+20.31734*2/245.23
+```
+
+
+###See which features are most important to predicting science scores
+```{r}
+varImp(rf.sci)
+
+varImp(rf.math)
+
+varImp(rf.eng)
+
+varImp(knn.sci)
+
+varImp(knn.math)
+
+varImp(knn.eng)
+```
+
+###Plot Feature Importances
+```{r}
+varImpPlot(rf.sci$finalModel)
+
+varImpPlot(rf.math$finalModel)
+
+varImpPlot(rf.eng$finalModel)
+```
+
+###Plot Feature Importances (Alternate Method)
+```{r}
+sci_importance <- varImp(rf.sci)
+plot(sci_importance)
+
+math_importance <- varImp(rf.math)
+plot(math_importance)
+
+eng_importance <- varImp(rf.eng)
+plot(eng_importance)
+```
+
+
+###Predicting based on Clustering
+```{r}
+clust_rf <- scaled_DSN
+clust_rf$cluster <- clust_scaled$cluster
+head(clust_rf)
+```
+
+###Partition Clusters into Train and Test Data
+###In order to perform classification instead of regression, the target variable needs to be converted to a factor.
+```{r}
+sample_clust <- sample_frac(clust_rf, 0.2)
+sample_clust$cluster <- as.factor(sample_clust$cluster)
+
+indxTrain <- createDataPartition(y = sample_clust$cluster,p = 0.8, list = TRUE)
+clust_rf_train <- sample_clust[indxTrain$Resample1,]
+clust_rf_test <- sample_clust[-indxTrain$Resample1,]
+```
+
+###Create the random forest model with cross-validation
+```{r}
+mod_Controls = trainControl(method='cv',number=5)
+rf.clust = train(cluster~., data=clust_rf_train, method = 'rf', metric = 'Kappa',trControl=mod_Controls, importance = TRUE)
+```
+
+
+###View the model
+```{r}
+rf.clust
+```
+
+
+###Predict using the model on the test dataset
+```{r}
+pred<- predict(rf.clust, clust_rf_test)
+```
+
+###Create a confusion matrix to see accuracy, precision, and recall
+```{r}
+caret::confusionMatrix(pred, clust_rf_test$cluster, mode = 'prec_recall')
+```
+
+```{r}
+head(data_sch)
+```
+
+###Plot Scores vs. Participation rate
+```{r}
+ggplot(data_sch %>% filter(SUBINDICATOR == 'SCIENCE'), aes(x = ACH_MEAN_SS, y = ACH_PART_RATE))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'MATH'), aes(x = ACH_MEAN_SS, y = ACH_PART_RATE))+
+  geom_point() +
+  geom_smooth()
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS'), aes(x = ACH_MEAN_SS, y = ACH_PART_RATE))+
+  geom_point() +
+  geom_smooth()
+```
+
+###Plot scores vs. percentage of students on Free/reduced lunch
+```{r}
+ggplot(data_sch %>% filter(SUBINDICATOR == 'SCIENCE'), aes(y = ACH_MEAN_SS, x = K12_PCT_FRL))+
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ggtitle('Science Scores Vs. Percentage of Free/Reduced Lunch Students')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'MATH'), aes(y = ACH_MEAN_SS, x = K12_PCT_FRL))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('Math Scores Vs. Percentage of Free/Reduced Lunch Students')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS'), aes(y = ACH_MEAN_SS, x = K12_PCT_FRL))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('English Scores Vs. Percentage of Free/Reduced Lunch Students')
+```
+
+###Plot Scores vs. Enrollment
+```{r}
+ggplot(data_sch %>% filter(SUBINDICATOR == 'SCIENCE'), aes(y = ACH_MEAN_SS, x = K12_ENROLLMENT))+
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ggtitle('Science Scores Vs. K12 Enrollment')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'MATH'), aes(y = ACH_MEAN_SS, x = K12_ENROLLMENT))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('Math Scores Vs. K12 Enrollment')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS'), aes(y = ACH_MEAN_SS, x = K12_ENROLLMENT))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('English Scores Vs. K12 Enrollment')
+```
+
+###Plot scores vs. Minority Percentage
+```{r}
+ggplot(data_sch %>% filter(SUBINDICATOR == 'SCIENCE'), aes(y = ACH_MEAN_SS, x = K12_PCT_MINORITY))+
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ggtitle('Science Scores Vs. Percentage of Minority Students')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'MATH'), aes(y = ACH_MEAN_SS, x = K12_PCT_MINORITY))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('Math Scores Vs. Percentage of Minority Students')
+
+ggplot(data_sch %>% filter(SUBINDICATOR == 'ENGLISH LANGUAGE ARTS'), aes(y = ACH_MEAN_SS, x = K12_PCT_MINORITY))+
+  geom_point() +
+  geom_smooth(method = 'lm')+
+  ggtitle('English Scores Vs. Percentage of Minority Students')
+```
+
+
+###Histogram of participation rates shows that most schools have a high amount of participation.
+```{r}
+hist(data_sch$ACH_PART_RATE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
